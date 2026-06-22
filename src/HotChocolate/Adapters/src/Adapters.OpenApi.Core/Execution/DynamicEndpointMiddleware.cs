@@ -1,7 +1,6 @@
 using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
 using System.IO.Pipelines;
-using System.Net;
 using System.Text.Json;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
@@ -124,13 +123,11 @@ internal sealed class DynamicEndpointMiddleware(
                     return;
                 }
 
-                // If execution started, and we produced GraphQL errors, we determine
-                // the status code the same way the GraphQL HTTP formatter does: an
-                // explicit override or a well-known error category wins, otherwise we
-                // fall back to 401/403 for auth errors or a generic 500.
+                // If execution started, and we produced GraphQL errors,
+                // we return HTTP 500 or 401/403 for authorization errors.
                 if (!operationResult.Errors.IsEmpty)
                 {
-                    var result = GetResultFromErrors(operationResult);
+                    var result = GetResultFromErrors(operationResult.Errors);
 
                     await result.ExecuteAsync(context);
                     return;
@@ -516,36 +513,9 @@ internal sealed class DynamicEndpointMiddleware(
         throw new InvalidFormatException();
     }
 
-    private static IResult GetResultFromErrors(OperationResult operationResult)
+    private static IResult GetResultFromErrors(IReadOnlyList<IError> errors)
     {
-        // Determine the status code the same way HotChocolate.AspNetCore's
-        // DefaultHttpResponseFormatter.OnDetermineStatusCode does.
-
-        // if the GraphQL result has context data, we will check if some middleware provided
-        // a status code or indicated an error that should be interpreted as a status code.
-        if (operationResult.ContextData is { Count: > 0 } contextData)
-        {
-            // First, we check if there is an explicit HTTP status code override by the user.
-            if (contextData.TryGetValue(ExecutionContextData.HttpStatusCode, out var value))
-            {
-                if (value is HttpStatusCode statusCode)
-                {
-                    return Results.StatusCode((int)statusCode);
-                }
-
-                if (value is int statusCodeInt)
-                {
-                    return Results.StatusCode(statusCodeInt);
-                }
-            }
-
-            if (contextData.ContainsKey(ExecutionContextData.OperationNotAllowed))
-            {
-                return Results.StatusCode((int)HttpStatusCode.MethodNotAllowed);
-            }
-        }
-
-        foreach (var error in operationResult.Errors)
+        foreach (var error in errors)
         {
             if (error.Code == ErrorCodes.Authentication.NotAuthenticated)
             {

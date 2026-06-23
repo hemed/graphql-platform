@@ -147,6 +147,15 @@ internal sealed class DynamicEndpointMiddleware(
                 detail: badRequestException.Message,
                 statusCode: StatusCodes.Status400BadRequest).ExecuteAsync(context);
         }
+        catch (GraphQLException graphQLException)
+        {
+            // A GraphQLException thrown out of execution is a request error: execution never
+            // produced data (e.g. an input/variable coercion failure surfaced as an exception,
+            // or a diagnostic listener / middleware re-threw). Mirror the GraphQL-over-HTTP HTTP
+            // formatter rather than falling through to the generic 500 below: authentication and
+            // authorization errors map to 401/403, every other request error maps to 400.
+            await GetResultFromException(graphQLException).ExecuteAsync(context);
+        }
         catch
         {
 #if NET9_0_OR_GREATER
@@ -155,6 +164,26 @@ internal sealed class DynamicEndpointMiddleware(
             await Results.StatusCode(500).ExecuteAsync(context);
 #endif
         }
+    }
+
+    private static IResult GetResultFromException(GraphQLException graphQLException)
+    {
+        foreach (var error in graphQLException.Errors)
+        {
+            if (error.Code == ErrorCodes.Authentication.NotAuthenticated)
+            {
+                return Results.Unauthorized();
+            }
+
+            if (error.Code == ErrorCodes.Authentication.NotAuthorized)
+            {
+                return Results.Forbid();
+            }
+        }
+
+        return Results.Problem(
+            detail: graphQLException.Errors.FirstOrDefault()?.Message ?? graphQLException.Message,
+            statusCode: StatusCodes.Status400BadRequest);
     }
 
     private static async Task<JsonDocument> BuildVariablesAsync(
